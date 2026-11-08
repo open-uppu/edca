@@ -11,6 +11,7 @@ from core.edca_engine import compute_edca_multiplier, calculate_weekly_execution
 from market_calendar.holiday_engine import get_best_trading_day
 from portfolio.rebalancer import Holding, filter_and_allocate
 from advisor.ai_advisor import generate_weekly_advisory
+from data.price_feed import get_live_market_metrics
 
 console = Console()
 
@@ -67,20 +68,57 @@ def cmd_recommend():
     
     trading_day_info = f"{best_day.strftime('%Y-%m-%d')} ({holiday_reason}) ช่วงเวลา 21:45 - 23:00 น."
     
-    # Representative EDCA metrics for current week (GOOGL / Market Dip)
-    # Price below 200 EMA, DD = -7.16%, RSI = 42
-    multiplier = compute_edca_multiplier(price=279.84, ema200=290.0, dd_pct=-7.16, rsi=42.0)
+    console.print(Panel.fit("[bold green]🌟 EDCA & AI Weekly Investment Advisor (Live Yahoo Finance Feed)[/bold green]", border_style="green"))
+    
+    # Fetch Live Market Metrics via Yahoo Finance
+    candidates = ["GOOGL", "TSLA", "DELTA", "BDMS"]
+    live_metrics_list = []
+    
+    with console.status("[bold cyan]กำลังดึงข้อมูลราคาและอินดิเคเตอร์สดจาก Yahoo Finance...[/bold cyan]"):
+        for ticker in candidates:
+            m = get_live_market_metrics(ticker)
+            live_metrics_list.append(m)
+            
+    # Display Live Market Data Table
+    mt = Table(title="ข้อมูลตลาดสด ณ วันนี้ (Live Indicators from Yahoo Finance)", show_header=True, header_style="bold cyan")
+    mt.add_column("Ticker", style="bold yellow")
+    mt.add_column("ราคาสดล่าสุด", justify="right")
+    mt.add_column("EMA 200 วัน", justify="right")
+    mt.add_column("RSI (14)", justify="right")
+    mt.add_column("ATH (1-Year Peak)", justify="right")
+    mt.add_column("Drawdown จาก ATH", justify="right")
+    mt.add_column("ตัวคูณ EDCA (Mt)", justify="right", style="bold green")
+    
+    # Calculate representative multiplier from best discount candidate
+    best_m = live_metrics_list[0]
+    multipliers = []
+    for m in live_metrics_list:
+        sub_m = compute_edca_multiplier(m.current_price, m.ema200, m.drawdown_pct, m.rsi14)
+        multipliers.append(sub_m)
+        dd_color = "red" if m.drawdown_pct < 0 else "green"
+        mt.add_row(
+            m.symbol,
+            f"{m.current_price:,.2f}",
+            f"{m.ema200:,.2f}",
+            f"{m.rsi14:.1f}",
+            f"{m.ath_price:,.2f}",
+            f"[{dd_color}]{m.drawdown_pct:+.2f}%[/{dd_color}]",
+            f"{sub_m:.2f}x"
+        )
+        
+    console.print(mt)
+    
+    # Average multiplier across discount watchlist
+    avg_multiplier = round(sum(multipliers) / len(multipliers), 2)
     current_buffer = 400.0  # Cash buffer in Dime! account
     
     plan = calculate_weekly_execution(
         base_budget=settings.base_weekly_budget,
-        multiplier=multiplier,
+        multiplier=avg_multiplier,
         current_buffer=current_buffer
     )
     
     allocations = filter_and_allocate(DEFAULT_HOLDINGS, available_budget=plan.invest_amount)
-    
-    console.print(Panel.fit("[bold green]🌟 EDCA & AI Weekly Investment Advisor[/bold green]", border_style="green"))
     
     # Summary Table
     t = Table(show_header=True, header_style="bold blue")
