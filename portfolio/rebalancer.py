@@ -23,17 +23,19 @@ def filter_and_allocate(
     holdings: List[Holding],
     available_budget: float,
     opportunities: Optional[List[Any]] = None,
-    min_order_thb: float = MIN_ORDER_THB
+    min_order_thb: float = MIN_ORDER_THB,
+    max_assets: Optional[int] = None
 ) -> List[AssetAllocation]:
     """
-    Allocate available budget prioritizing discounted quality assets while protecting
-    against overconcentration and enforcing Dime! minimum order threshold (50 THB).
-    Also supports introducing high-grade new stock opportunities from Market Scanner.
+    Dynamically ranks and allocates budget across high-probability discounted assets
+    while strictly protecting against concentration risk and enforcing Dime!'s 50 THB rule.
+    Scales the number of assets dynamically based on available budget (up to 5 assets).
     """
     results: List[AssetAllocation] = []
-    eligible_candidates: List[dict] = []
+    eligible_pool: List[dict] = []
     existing_tickers = set()
 
+    # 1. Stage 1: Concentration Risk Filtering (Overweight Guard)
     for h in holdings:
         existing_tickers.add(h.ticker)
         # Concentration rule: >=20% single US asset or >=40% single Thai asset is OVERWEIGHT
@@ -46,18 +48,16 @@ def filter_and_allocate(
                 reason=f"สัดส่วนในพอร์ตล้นเกินเกณฑ์ปลอดภัย ({h.port_weight:.1f}%)"
             ))
         else:
-            eligible_candidates.append({
+            discount = abs(min(0.0, h.return_pct))
+            eligible_pool.append({
                 "ticker": h.ticker,
                 "return_pct": h.return_pct,
+                "discount_score": discount,
                 "is_new": False,
-                "reason_tag": f"โซนของลดราคา (ผลตอบแทนติดลบ {h.return_pct:.1f}% เข้าเกณฑ์ EDCA Discount)"
+                "tag": f"หุ้นเดิมโซนลดราคา (Drawdown {h.return_pct:+.1f}%)"
             })
 
-    # Sort existing eligible candidates by discount (most negative return first)
-    eligible_candidates.sort(key=lambda x: x["return_pct"])
-
-    # Check for top-tier new stock opportunities from Market Scanner (Grade A+ or A)
-    new_candidates: List[dict] = []
+    # 2. Stage 2: Ingest High-Moat New Stock Opportunities from Market Scanner (Grade A+ or A)
     if opportunities:
         for opp in opportunities:
             ticker = getattr(opp, "ticker", None) or (opp.get("ticker") if isinstance(opp, dict) else "")
@@ -68,95 +68,105 @@ def filter_and_allocate(
 
             if clean_ticker not in existing_tickers and ticker not in existing_tickers:
                 if grade in ("A+", "A") or mult >= 1.30:
-                    new_candidates.append({
+                    discount = abs(min(0.0, dd))
+                    eligible_pool.append({
                         "ticker": clean_ticker,
-                        "return_pct": dd,  # Use drawdown as discount metric
+                        "return_pct": dd,
+                        "discount_score": discount,
                         "is_new": True,
-                        "reason_tag": f"เปิดพอร์ตหุ้นใหม่เรดาร์ A ({grade}): Drawdown {dd:+.1f}%, ตัวคูณ Mt {mult:.2f}x"
+                        "tag": f"หุ้นใหม่เรดาร์ A ({grade}) (Drawdown {dd:+.1f}%, Mt {mult:.2f}x)"
                     })
 
-        new_candidates.sort(key=lambda x: x["return_pct"])
-
-    # Combine selection: prioritize top existing discounted holding + top new opportunity (or 2 existing)
-    selected_pool: List[dict] = []
-    if eligible_candidates:
-        selected_pool.append(eligible_candidates[0])
-
-    if new_candidates:
-        # If there is a high-grade new opportunity, grant it the 2nd slot
-        selected_pool.append(new_candidates[0])
-    elif len(eligible_candidates) > 1:
-        selected_pool.append(eligible_candidates[1])
-
-    if not selected_pool:
+    if not eligible_pool:
         return results
 
-    # Check Dime! minimum order threshold: 50 THB
+    # 3. Stage 3: Unified Leaderboard Ranking (Sorted by Discount Depth)
+    # Higher discount score = Higher priority rank
+    eligible_pool.sort(key=lambda x: x["discount_score"], reverse=True)
+
+    # 4. Stage 4: Check Minimum Order Threshold (50 THB)
     if available_budget < min_order_thb:
-        for item in selected_pool:
+        for rank_idx, item in enumerate(eligible_pool, start=1):
             results.append(AssetAllocation(
                 ticker=item["ticker"],
                 allocated_thb=0.0,
                 percentage=0.0,
                 action="SKIP (UNDER MIN ORDER)",
-                reason=f"งบลงทุนสัปดาห์นี้ ({available_budget:.2f} บาท) ต่ำกว่าขั้นต่ำ {min_order_thb:.0f} บาทของ Dime! แนะนำทบเข้า Cash Buffer"
+                reason=f"อันดับ #{rank_idx}: {item['tag']} (งบรวมสัปดาห์นี้ {available_budget:.2f} บ. ต่ำกว่าเกณฑ์ขั้นต่ำ {min_order_thb:.0f} บ. ของ Dime!)"
             ))
         return results
 
-    # Budget Allocation with Minimum Order Size Guard
-    # If budget cannot cover 2 orders of min_order_thb (e.g. budget < 100 THB), allocate 100% to top candidate
-    if len(selected_pool) == 1 or available_budget < (2 * min_order_thb):
-        top = selected_pool[0]
-        action_prefix = "NEW ENTRY (BUY)" if top.get("is_new") else "ACCUMULATE (BUY)"
+    # 5. Stage 5: Dynamic Slots (K) Determination based on Budget Size
+    # Automatically chooses how many stocks to allocate to maximize diversification without over-fragmentation
+    if max_assets is not None:
+        k = max(1, min(max_assets, len(eligible_pool)))
+    elif available_budget < (2 * min_order_thb):  # < 100 THB -> 1 slot
+        k = 1
+    elif available_budget < 600.0:                # 100 - 599 THB -> 2 slots
+        k = 2
+    elif available_budget < 1500.0:               # 600 - 1,499 THB -> 3 slots
+        k = 3
+    elif available_budget < 3000.0:               # 1,500 - 2,999 THB -> 4 slots
+        k = 4
+    else:                                         # >= 3,000 THB -> 5 slots
+        k = 5
+
+    k = min(k, len(eligible_pool))
+
+    # Guard: Ensure budget can cover at least (k * min_order_thb)
+    while k > 1 and (available_budget / k) < min_order_thb:
+        k -= 1
+
+    # 6. Stage 6: Weight Profiles
+    weight_profiles = {
+        1: [1.0],
+        2: [0.60, 0.40],
+        3: [0.45, 0.35, 0.20],
+        4: [0.35, 0.25, 0.22, 0.18],
+        5: [0.30, 0.24, 0.18, 0.15, 0.13]
+    }
+    weights = weight_profiles.get(k, [1.0 / k] * k)
+
+    # 7. Stage 7: Exact Allocation & Dime! 50 THB Minimum Enforcement
+    allocated_candidates = eligible_pool[:k]
+    alloc_amts = [round(available_budget * w, 2) for w in weights]
+
+    # Enforce minimum order threshold for all slots
+    for i in range(k):
+        if alloc_amts[i] < min_order_thb:
+            alloc_amts[i] = min_order_thb
+
+    # Ensure sum matches available_budget exactly without violating min_order_thb
+    diff = round(available_budget - sum(alloc_amts), 2)
+    if diff != 0:
+        if alloc_amts[0] + diff >= min_order_thb:
+            alloc_amts[0] = round(alloc_amts[0] + diff, 2)
+        else:
+            alloc_amts[0] = round(available_budget - sum(alloc_amts[1:]), 2)
+
+    for i, item in enumerate(allocated_candidates):
+        rank = i + 1
+        order_amt = alloc_amts[i]
+        pct = round((order_amt / available_budget) * 100.0, 1)
+        action_name = "NEW ENTRY (BUY)" if item["is_new"] else "ACCUMULATE (BUY)"
+
         results.append(AssetAllocation(
-            ticker=top["ticker"],
-            allocated_thb=round(available_budget, 2),
-            percentage=100.0,
-            action=action_prefix,
-            reason=f"{top['reason_tag']} (รวมงบเป็น 1 ไม้ตามเกณฑ์ขั้นต่ำ Dime! {min_order_thb:.0f} บาท)" if len(selected_pool) > 1 else top['reason_tag']
+            ticker=item["ticker"],
+            allocated_thb=order_amt,
+            percentage=pct,
+            action=action_name,
+            reason=f"อันดับ #{rank}: {item['tag']}"
         ))
-        if len(selected_pool) > 1:
-            second = selected_pool[1]
-            results.append(AssetAllocation(
-                ticker=second["ticker"],
-                allocated_thb=0.0,
-                percentage=0.0,
-                action="SKIP (BUDGET CONSOLIDATION)",
-                reason=f"งบไม่พอแบ่ง 2 ไม้ให้ถึงขั้นต่ำ {min_order_thb:.0f} บาทต่อไม้ (ยกยอดไปให้ {top['ticker']})"
-            ))
-    else:
-        # Both can receive at least min_order_thb
-        first = selected_pool[0]
-        second = selected_pool[1]
 
-        # Ideal split: 60% / 40%
-        first_amt = round(available_budget * 0.60, 2)
-        second_amt = round(available_budget * 0.40, 2)
-
-        # Enforce that second_amt is at least min_order_thb
-        if second_amt < min_order_thb:
-            second_amt = min_order_thb
-            first_amt = round(available_budget - second_amt, 2)
-
-        first_pct = round((first_amt / available_budget) * 100.0, 1)
-        second_pct = round((second_amt / available_budget) * 100.0, 1)
-
-        first_act = "NEW ENTRY (BUY)" if first.get("is_new") else "ACCUMULATE (BUY)"
-        second_act = "NEW ENTRY (BUY)" if second.get("is_new") else "ACCUMULATE (BUY)"
-
+    # 8. Stage 8: Remaining Queue / Watchlist Items (Unallocated this week)
+    queue_candidates = eligible_pool[k:]
+    for i, item in enumerate(queue_candidates, start=k + 1):
         results.append(AssetAllocation(
-            ticker=first["ticker"],
-            allocated_thb=first_amt,
-            percentage=first_pct,
-            action=first_act,
-            reason=first["reason_tag"]
-        ))
-        results.append(AssetAllocation(
-            ticker=second["ticker"],
-            allocated_thb=second_amt,
-            percentage=second_pct,
-            action=second_act,
-            reason=second["reason_tag"]
+            ticker=item["ticker"],
+            allocated_thb=0.0,
+            percentage=0.0,
+            action="QUEUE (NEXT WEEK)",
+            reason=f"อันดับ #{i}: {item['tag']} (รอคิวจัดสรรในสัปดาห์ถัดไป)"
         ))
 
     return results
