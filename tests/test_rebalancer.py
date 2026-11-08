@@ -78,3 +78,32 @@ def test_new_stock_opportunity_allocation():
     assert nvda_alloc is not None
     assert nvda_alloc.action == "NEW ENTRY (BUY)"
     assert nvda_alloc.allocated_thb >= 50.0
+
+
+def test_dynamic_multi_asset_scaling_3_and_4():
+    holdings = [
+        Holding(ticker="DELTA", market_value_usd=72.0, port_weight=9.27, return_pct=-20.27),
+        Holding(ticker="BDMS", market_value_usd=1.2, port_weight=0.15, return_pct=-9.59),
+        Holding(ticker="TSLA", market_value_usd=139.0, port_weight=7.93, return_pct=-8.59),
+        Holding(ticker="GOOGL", market_value_usd=253.0, port_weight=14.44, return_pct=-7.16),
+    ]
+    opportunities = [
+        {"ticker": "NVDA", "grade": "A+", "multiplier": 1.8, "drawdown_pct": -22.0},
+    ]
+
+    # With 1,000 THB budget: scales dynamically to 3 assets (600 <= budget < 1500)
+    alloc_3 = filter_and_allocate(holdings, available_budget=1000.0, opportunities=opportunities)
+    active_buys_3 = [a for a in alloc_3 if a.allocated_thb > 0]
+    assert len(active_buys_3) == 3
+    for a in active_buys_3:
+        assert a.allocated_thb >= 50.0
+    assert round(sum(a.allocated_thb for a in active_buys_3), 2) == 1000.0
+
+    # With 2,000 THB budget: scales dynamically to 4 assets (1500 <= budget < 3000)
+    alloc_4 = filter_and_allocate(holdings, available_budget=2000.0, opportunities=opportunities)
+    active_buys_4 = [a for a in alloc_4 if a.allocated_thb > 0]
+    assert len(active_buys_4) == 4
+    for a in active_buys_4:
+        assert a.allocated_thb >= 50.0
+    assert round(sum(a.allocated_thb for a in active_buys_4), 2) == 2000.0
+
