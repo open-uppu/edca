@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import datetime
 from typing import List
 from rich.console import Console
