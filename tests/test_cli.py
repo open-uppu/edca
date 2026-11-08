@@ -26,3 +26,14 @@ def test_cli_portfolio():
     assert result.returncode == 0
     assert "TSM" in (result.stdout or "")
     assert "SCB" in (result.stdout or "")
+
+def test_cli_scan():
+    result = subprocess.run(
+        [sys.executable, "cli.py", "scan"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=BASE_DIR
+    )
+    assert result.returncode == 0
+    assert "Opportunity" in (result.stdout or "") or "Scanner" in (result.stdout or "")

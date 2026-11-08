@@ -18,8 +18,9 @@ from config import Settings
 from core.edca_engine import compute_edca_multiplier, calculate_weekly_execution
 from market_calendar.holiday_engine import get_best_trading_day
 from portfolio.rebalancer import Holding, filter_and_allocate
-from advisor.ai_advisor import generate_weekly_advisory
+from advisor.ai_advisor import generate_weekly_advisory, generate_scanner_advisory
 from data.price_feed import get_live_market_metrics
+from portfolio.market_scanner import scan_market_opportunities
 
 console = Console()
 
@@ -176,15 +177,50 @@ def cmd_backtest():
     console.print(t)
     console.print("[dim]*หมายเหตุ: คำนวณจากแบบจำลอง Monte Carlo & S&P 500 Historical Bear-Correction Regime[/dim]")
 
+def cmd_scan():
+    console.print(Panel.fit("[bold magenta]🔍 EDCA Market Opportunity Scanner (Live Yahoo Finance Watchlist)[/bold magenta]", border_style="magenta"))
+    
+    with console.status("[bold cyan]กำลังสแกนราคาและอินดิเคเตอร์สดของหุ้นชั้นนำในตลาด...[/bold cyan]"):
+        opps = scan_market_opportunities()
+        
+    t = Table(title="เรดาร์ตรวจจับหุ้นของลดราคาในตลาด (Opportunity Ranking)", show_header=True, header_style="bold cyan")
+    t.add_column("Ticker", style="bold yellow")
+    t.add_column("ราคาล่าสุด", justify="right")
+    t.add_column("Drawdown จาก ATH", justify="right")
+    t.add_column("RSI (14)", justify="right")
+    t.add_column("ตัวคูณ Mt", justify="right", style="bold green")
+    t.add_column("เกรด", justify="center", style="bold")
+    t.add_column("สัญญาณกลยุทธ์ (Strategy Signal)")
+    
+    for o in opps:
+        dd_color = "red" if o.drawdown_pct < -15 else "yellow" if o.drawdown_pct < -5 else "dim"
+        grade_color = "bold green" if o.grade == "A+" else "green" if o.grade == "A" else "yellow" if o.grade == "B" else "dim"
+        t.add_row(
+            o.ticker,
+            f"${o.current_price:,.2f}" if ".BK" not in o.ticker else f"฿{o.current_price:,.2f}",
+            f"[{dd_color}]{o.drawdown_pct:+.2f}%[/{dd_color}]",
+            f"{o.rsi14:.1f}",
+            f"{o.multiplier:.2f}x",
+            f"[{grade_color}]{o.grade}[/{grade_color}]",
+            o.signal
+        )
+    console.print(t)
+    
+    console.print("\n[bold cyan]🤖 AI Investment Strategist (วิเคราะห์สรุปผ่าน LLM Gateway 100.105.249.12:4000)...[/bold cyan]")
+    brief = generate_scanner_advisory(opps)
+    console.print(Panel(str(brief or ""), title="บทวิเคราะห์เจาะลึกหุ้นของลดราคาประจำสัปดาห์", border_style="magenta"))
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] == "recommend":
         cmd_recommend()
     elif sys.argv[1] == "portfolio":
         cmd_portfolio()
+    elif sys.argv[1] == "scan" or sys.argv[1] == "market":
+        cmd_scan()
     elif sys.argv[1] == "backtest":
         cmd_backtest()
     else:
-        console.print("[red]Unknown command. Available: recommend, portfolio, backtest[/red]")
+        console.print("[red]Unknown command. Available: recommend, portfolio, scan, backtest[/red]")
 
 if __name__ == "__main__":
     main()
