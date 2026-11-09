@@ -59,3 +59,45 @@ def generate_weekly_advisory(plan: ExecutionPlan, allocations: List[AssetAllocat
         pass
         
     return fallback_heuristic_advisory(plan, allocations, trading_day_info)
+
+def generate_scanner_advisory(opportunities: list) -> str:
+    """Call LLM Gateway to generate an executive market discovery briefing for top discounted stocks."""
+    settings = Settings()
+    top_3 = opportunities[:3]
+    opp_text = "\n".join([
+        f"- {o.ticker}: ราคา ${o.current_price:,.2f}, ส่วนลดจาก ATH {o.drawdown_pct:.1f}%, RSI {o.rsi14:.1f}, เกรด {o.grade} ({o.signal})"
+        for o in top_3
+    ])
+    prompt = (
+        f"คุณคือ Senior Investment Strategist ด้าน EDCA Value Averaging\n"
+        f"จากผลการสแกนตลาดวันนี้ พบหุ้นชั้นนำระดับโลก 3 ตัวที่กำลังลดราคาแรงและติดสัญญาณน่าซื้อที่สุด:\n"
+        f"{opp_text}\n"
+        f"จงวิเคราะห์สรุปคำแนะนำในรูปแบบ Bullet Point ภาษาไทยว่า ทำไมหุ้นเหล่านี้จึงเป็นโอกาสทองในการทยอยช้อนซื้อ (Buy on Dip) ในสัปดาห์นี้ ชี้จุดแข็งพื้นฐานและเหตุผลทางเทคนิค สั้นกระชับ ตรงประเด็น"
+    )
+    try:
+        resp = requests.post(
+            f"{settings.llm_gateway_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.llm_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": settings.llm_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.3
+            },
+            timeout=8.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content")
+            if content and isinstance(content, str):
+                return content.strip()
+    except Exception:
+        pass
+        
+    return (
+        f"🌟 **สรุปหุ้นเด่นในตลาดที่น่าสนใจช้อนซื้อสัปดาห์นี้ (EDCA Market Pick):**\n" +
+        "\n".join([f"• **{o.ticker}** (เกรด {o.grade}): ย่อตัว {o.drawdown_pct:.1f}% จากจุดสูงสุดเดิม พร้อม RSI {o.rsi14:.1f} ➔ {o.signal}" for o in top_3])
+    )
