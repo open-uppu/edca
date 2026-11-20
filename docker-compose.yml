@@ -7,7 +7,7 @@ services:
     ports:
       - "8006:8006"
     env_file:
-      - D:/workspace/open-uppu/trader/edca/.env
+      - /data/secrets/edca.env
     command: ["python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8006"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8006/health"]
