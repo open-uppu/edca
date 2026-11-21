@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 
 MIN_ORDER_THB: float = 50.0
 
@@ -17,6 +17,7 @@ class AssetAllocation:
     percentage: float
     action: str
     reason: str
+    shares: int = 0
 
 
 def filter_and_allocate(
@@ -24,7 +25,8 @@ def filter_and_allocate(
     available_budget: float,
     opportunities: Optional[List[Any]] = None,
     min_order_thb: float = MIN_ORDER_THB,
-    max_assets: Optional[int] = None
+    max_assets: Optional[int] = None,
+    prices: Optional[Dict[str, float]] = None
 ) -> List[AssetAllocation]:
     """
     Dynamically ranks and allocates budget across high-probability discounted assets
